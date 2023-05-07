@@ -8,25 +8,21 @@ def run_sickadd():
     sickchill_url = os.environ.get('SICKCHILL_URL')
     sickchill_api_key = os.environ.get('SICKCHILL_API_KEY')
     debug_enabled = os.environ.get('DEBUG_ENABLED', 'false').lower() == 'true'
+    database_path = os.environ.get('DATABASE_PATH')
+    debug_log_path = os.environ.get('DEBUG_LOG_PATH')
 
     cmd = f"python SickAdd.py --watchlist_urls {watchlist_urls} --sickchill_url {sickchill_url} --sickchill_api_key {sickchill_api_key}"
     
     if debug_enabled:
         cmd += " --debug"
+    
+    if database_path:
+        cmd += f" --database_path {database_path}"
+    
+    if debug_log_path:
+        cmd += f" --debug_log_path {debug_log_path}"
 
-        # Create the /var directory if it does not exist
-        if not os.path.exists("/var"):
-            os.makedirs("/var")
-
-        # Create the /var/sickadd.log file if it does not exist
-        if not os.path.exists("/var/sickadd.log"):
-            with open("/var/sickadd.log", "w") as log_file:
-                log_file.write("")
-
-        with open("/var/sickadd.log", "a") as log_file:
-            proc = subprocess.Popen(cmd, shell=True, stdout=log_file, stderr=subprocess.STDOUT)
-    else:
-        proc = subprocess.Popen(cmd, shell=True)
+    proc = subprocess.Popen(cmd, shell=True)
 
 interval = int(os.environ.get('INTERVAL_MINUTES', 1440))
 schedule.every(interval).minutes.do(run_sickadd)
