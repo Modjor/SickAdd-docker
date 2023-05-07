@@ -1,3 +1,43 @@
+#!/usr/bin/env python
+#
+##################################################################################
+### SickAdd V3  - THIS IS AN ALPHA RELEASE
+#
+# This script downloads your IMDB favorites and add them to your SickBeard shows
+#
+# NOTE: This script requires Python to be installed on your system
+#
+#
+# Changelog
+# Version 3.1
+# Supports imdb list with over 100 items
+#
+# Version 3.0
+# Full rewrite, now supports multiple imdb watchlist to be monitored, various command line argument including browsing &
+# deleting items from the sqlite db
+#
+# Version 2.1
+# Minor Bug correction around TVDB url / IMDB mapping)
+#
+# Version 2
+# - Add IMDB Watch list support (using IMDB Mapping from TVDB)
+# - Add a Debug mode so it's a bit less verbose in standard mode
+###########################################################
+
+
+# Settings
+settings = {
+    "watchlist_urls": [
+        "https://www.imdb.com/list/ls123456789", "https://www.imdb.com/list/ls987654321"
+    ],
+    "sickchill_url": "http://sickchill_ip:port",
+    "sickchill_api_key": "your_sickchill_api_key",
+    "database_path": "",
+    "debug_log_path": "",
+    "debug": 1,
+}
+
+
 #########    NO MODIFICATION UNDER THAT LINE
 ##########################################################
 
@@ -17,8 +57,21 @@ def debug_log(message):
     if settings["debug"]:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] {message}")
-        with open("debug.log", "a") as log_file:
+        log_file_path = settings["debug_log_path"]
+
+        # Set a default log file name if the path is empty
+        if not log_file_path:
+            log_file_path = "sickadd.log"
+
+        # Create the directory if it doesn't exist and if the directory path is not empty
+        directory_path = os.path.dirname(log_file_path)
+        if directory_path:
+            os.makedirs(directory_path, exist_ok=True)
+
+        with open(log_file_path, "a") as log_file:
             log_file.write(f"[{timestamp}] {message}\n")
+
+
 
 # Check if IMDB Watchlists are reachable
 def check_watchlists():
@@ -88,8 +141,14 @@ def setup_database():
     else:
         database_path = os.path.join(os.getcwd(), "sickadd.db")
 
-    # Create the directory if it doesn't exist
-    os.makedirs(os.path.dirname(database_path), exist_ok=True)
+    # Set a default database file name if the path is empty
+    if not database_path:
+        database_path = "sickadd.db"
+
+    # Create the directory if it doesn't exist and if the directory path is not empty
+    directory_path = os.path.dirname(database_path)
+    if directory_path:
+        os.makedirs(directory_path, exist_ok=True)
 
     debug_log(f"Database path: {database_path}")
     conn = sqlite3.connect(database_path)
@@ -110,6 +169,8 @@ def setup_database():
     )
     conn.commit()
     return conn, cur
+
+
 
 
 # Get IMDb watchlists and extract series
@@ -320,11 +381,18 @@ if __name__ == "__main__":
         help='Path to the SQLite database file\n'
              'Example: --database_path "/var/sickadd.db"'
     )
+    parser.add_argument(
+        "--debug_log_path",
+        help='Path to the log file when debug mode is enabled\n'
+             'Example: --debug_log_path "/var/log/sickadd.log"'
+    )
     args = parser.parse_args()
 
     if args.debug:
         settings["debug"] = 1
         debug_log("Debug mode enabled")
+        if args.debug_log_path:
+            settings["debug_log_path"] = args.debug_log_path
 
     if args.watchlist_urls:
         watchlist_urls = [url.strip() for url in ",".join(args.watchlist_urls).split(",")]
@@ -349,6 +417,3 @@ if __name__ == "__main__":
         conn.close()
     else:
         main()
-
-
-
