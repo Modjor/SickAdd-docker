@@ -1,28 +1,3 @@
-#!/usr/bin/env python
-#
-##################################################################################
-### SickAdd V3  - THIS IS AN ALPHA RELEASE
-#
-# This script downloads your IMDB favorites and add them to your SickBeard shows
-#
-# NOTE: This script requires Python to be installed on your system
-#
-#
-# Changelog
-# Version 3.1
-# Supports imdb list with over 100 items
-#
-# Version 3.0
-# Full rewrite, now supports multiple imdb watchlist to be monitored, various command line argument including browsing &
-# deleting items from the sqlite db
-#
-# Version 2.1
-# Minor Bug correction around TVDB url / IMDB mapping)
-#
-# Version 2
-# - Add IMDB Watch list support (using IMDB Mapping from TVDB)
-# - Add a Debug mode so it's a bit less verbose in standard mode
-#
 #########    NO MODIFICATION UNDER THAT LINE
 ##########################################################
 
@@ -33,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 import json
 from datetime import datetime
+import os
 
 
 
@@ -88,7 +64,7 @@ def check_sickchill():
         debug_log("Error: SickChill is not reachable.")
         print("Error: SickChill is not reachable. Check your SickChill server IP, Port and API key.")
         sys.exit(1)
-    debug_log("SickChill is reachable. Check your SickChill server IP, Port and API key.")
+    debug_log("SickChill is reachable.")
 
 
 
@@ -105,10 +81,19 @@ def check_thetvdb():
     else:
         debug_log("TheTVDB is reachable.")
   
-
 # Create or connect to SQLite database
 def setup_database():
-    conn = sqlite3.connect("sickadd.db")
+    if "database_path" in settings:
+        database_path = settings["database_path"]
+    else:
+        database_path = os.path.join(os.getcwd(), "sickadd.db")
+
+    # Create the directory if it doesn't exist
+    os.makedirs(os.path.dirname(database_path), exist_ok=True)
+
+    debug_log(f"Database path: {database_path}")
+    conn = sqlite3.connect(database_path)
+    debug_log(f"Connected to database at: {conn}")
     cur = conn.cursor()
     cur.execute(
         """
@@ -125,6 +110,7 @@ def setup_database():
     )
     conn.commit()
     return conn, cur
+
 
 # Get IMDb watchlists and extract series
 def get_imdb_watchlist_series():
@@ -329,6 +315,11 @@ if __name__ == "__main__":
         help="SickChill API key\n"
              'Example: --sickchill_api_key "1a2b3c4d5e6f7g8h"'
     )
+    parser.add_argument(
+        "--database_path",
+        help='Path to the SQLite database file\n'
+             'Example: --database_path "/var/sickadd.db"'
+    )
     args = parser.parse_args()
 
     if args.debug:
@@ -345,6 +336,9 @@ if __name__ == "__main__":
     if args.sickchill_api_key:
         settings["sickchill_api_key"] = args.sickchill_api_key
 
+    if args.database_path:
+        settings["database_path"] = args.database_path
+
     if args.delete:
         conn, cur = setup_database()
         delete_series_from_db(conn, cur, args.delete)
@@ -355,3 +349,6 @@ if __name__ == "__main__":
         conn.close()
     else:
         main()
+
+
+
