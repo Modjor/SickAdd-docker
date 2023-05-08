@@ -13,6 +13,7 @@
 # - Now stores all IDs from IMDb watchlists with a new show_type db field to differentiate TV shows
 # - Dramatically reduces the number of requests to IMDb by ignoring any known IMDb ID
 # - Provides a foundation for future movie support.
+# - Rewrite the IMDB parser to detect additional shows, such as Mini-Series, and to support various types of IMDB lists.
 #
 # Version 3.1
 # Supports IMDb lists with over 100 items
@@ -20,15 +21,7 @@
 # Version 3.0
 # Full rewrite, now supports multiple IMDb watchlists to be monitored, various command-line arguments including browsing &
 # deleting items from the SQLite database
-#
-# Version 2.1
-# Minor bug fixes related to TVDB URL / IMDb mapping
-#
-# Version 2
-# - Added IMDb Watchlist support (using IMDb Mapping from TVDB)
-# - Added a Debug mode to make the output less verbose in standard mode
 ###########################################################
-
 
 # Settings
 settings = {
@@ -40,6 +33,7 @@ settings = {
     "database_path": "",
     "debug_log_path": "",
     "debug": 1,
+    "debug_max_size_mb": "20"
 }
 
 
@@ -56,13 +50,13 @@ import os
 import html
 import time
 import re
+import gzip
 
-
-# Debug function
-def debug_log(message):
-    if settings["debug"]:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{timestamp}] {message}")
+def debug_log(message, level=1, force=False):
+    if settings["debug"] >= level or force:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        log_message = f"[{timestamp}] {message}"
+        print(log_message)
         log_file_path = settings["debug_log_path"]
 
         # Set a default log file name if the path is empty
@@ -74,8 +68,25 @@ def debug_log(message):
         if directory_path:
             os.makedirs(directory_path, exist_ok=True)
 
-        with open(log_file_path, "a") as log_file:
-            log_file.write(f"[{timestamp}] {message}\n")
+        # Check the log file size and compress it if necessary
+        try:
+            max_size_bytes = float(settings["debug_max_size_mb"]) * 1024 * 1024
+        except (ValueError, TypeError):
+            max_size_bytes = None
+
+        if max_size_bytes and os.path.exists(log_file_path) and os.path.getsize(log_file_path) > max_size_bytes:
+            backup_file_path = f"sickadd.log_{timestamp}.log"
+            with open(log_file_path, "rb") as input_file, gzip.open(backup_file_path + ".gz", "wb") as output_file:
+                output_file.writelines(input_file)
+            os.remove(log_file_path)
+            with open(log_file_path, "w") as log_file:
+                log_file.write(log_message + "\n")
+        else:
+            with open(log_file_path, "a") as log_file:
+                log_file.write(log_message + "\n")
+
+
+
 
 # Check if IMDb Watchlists are reachable
 def check_watchlists():
@@ -157,36 +168,52 @@ def setup_database():
     conn = sqlite3.connect(database_path)
     debug_log(f"Connected to database at: {conn}")
     cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS shows (
-            imdb_id TEXT PRIMARY KEY,
-            title TEXT,
-            watchlist_url TEXT,
-            imdb_import_date TEXT,
-            added_to_sickchill INTEGER,
-            thetvdb_id INTEGER,
-            sc_added_date TEXT
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='shows'")
+    table_exists = cur.fetchone()
+
+    if table_exists is None:
+        # The "shows" table doesn't exist, create the table with all fields, including "show_type"
+        debug_log("Creating the 'shows' table with all fields")
+        cur.execute(
+            """
+            CREATE TABLE shows (
+                imdb_id TEXT PRIMARY KEY,
+                title TEXT,
+                watchlist_url TEXT,
+                imdb_import_date TEXT,
+                added_to_sickchill INTEGER,
+                thetvdb_id INTEGER,
+                sc_added_date TEXT,
+                show_type INTEGER
+            )
+            """
         )
-        """
-    )
-    conn.commit()
-    ## DB Migration steps for new versions
-    # Add the 'show_type' column if it doesn't exist
+        conn.commit()
+    else:
+        # The "shows" table exists, check if it needs to be upgraded
+        upgrade_database(conn, cur)
+
+    return conn, cur
+    
+########## DB UPGRADE SECTION #######
+# Upgrade the database structure if needed
+def upgrade_database(conn, cur):
     cur.execute("PRAGMA table_info(shows)")
     columns = cur.fetchall()
     column_names = [column[1] for column in columns]
+
+    # Add the 'show_type' column if it doesn't exist
     if "show_type" not in column_names:
+        debug_log("Upgrading the 'shows' table, adding the 'show_type' column")
         cur.execute("ALTER TABLE shows ADD COLUMN show_type INTEGER")
         conn.commit()
-        debug_log("Added new column 'show_type' to the 'shows' table")
 
         # Set all existing show entries 'show_type' to 1
         cur.execute("UPDATE shows SET show_type = 1")
         conn.commit()
-        debug_log("DB Migration - Set all existing show show_type to 1 (TV Shows)")
+        debug_log("DB Upgrade - Set all existing show show_type to 1 (TV Shows)")
 
-    return conn, cur
 
 
 # Retrieve IMDb IDs from a given IMDb watchlist URL
@@ -409,9 +436,22 @@ def update_added_to_sickchill(conn, cur, sickchill_tvdb_ids):
 
 # Add series to SickChill
 def add_series_to_sickchill(conn, cur):
-    cur.execute("SELECT thetvdb_id, title FROM shows WHERE added_to_sickchill=0 AND show_type=1")
+    # Get shows with null or empty thetvdb_id
+    cur.execute("SELECT imdb_id, title FROM shows WHERE added_to_sickchill=0 AND show_type=1 AND (thetvdb_id IS NULL OR thetvdb_id='')")
+    shows_with_null_thetvdb_id = cur.fetchall()
+    message = f"{len(shows_with_null_thetvdb_id)} TV shows will be skipped due to missing TheTVDB IDs."
+    debug_log(message, force=True)
+    for show in shows_with_null_thetvdb_id:
+        message = f"Missing TheTVDB ID for TV show with IMDB ID: {show[0]} and Title: {show[1]}"
+        debug_log(message, force=True)
+
+    # Get shows to add to SickChill
+    cur.execute("SELECT thetvdb_id, title FROM shows WHERE added_to_sickchill=0 AND show_type=1 AND thetvdb_id IS NOT NULL AND thetvdb_id<>''")
     shows_to_add = cur.fetchall()
     debug_log(f"{len(shows_to_add)} series to add to SickChill")
+
+    added_to_sickchill = False
+
     for show in shows_to_add:
         thetvdb_id, title = show
         debug_log(f"Attempting to add series to SickChill (TheTVDB ID: {thetvdb_id}, Title: {title})")
@@ -422,9 +462,19 @@ def add_series_to_sickchill(conn, cur):
             cur.execute("UPDATE shows SET added_to_sickchill=1, sc_added_date=? WHERE thetvdb_id=?", (datetime.now().strftime("%Y-%m-%d"), thetvdb_id))
             conn.commit()
             debug_log(f"Series added to SickChill (TheTVDB ID: {thetvdb_id}, Title: {title})")
+            added_to_sickchill = True
         else:
             debug_log(f"Unable to add series to SickChill (TheTVDB ID: {thetvdb_id}, Title: {title}) - Response code: {response.status_code}")
 
+    if added_to_sickchill:
+        debug_log("Import to SickChill is complete. SickAdd will now exit.", force=True)
+    else:
+        debug_log("No new TV series to import. SickAdd will now exit", force=True)
+
+
+
+
+# Show db content
 def show_db_content(cursor):
     # Select records where the Type is Unknown (Not TV Shows)
     cursor.execute("SELECT * FROM shows WHERE show_type = 0")
@@ -498,9 +548,15 @@ def delete_series_from_db(conn, cur, imdb_id):
         conn.commit()
         debug_log(f"Series removed from the database (IMDb ID: {imdb_id})")
 
+# Initial db check
+def check_database():
+    conn, cur = setup_database()
+    conn.close()
+
 
 # Main function
 def main():
+    check_database()
     check_watchlists()
     check_sickchill()
     check_thetvdb()
